@@ -1,0 +1,280 @@
+---
+title: "BST209 Project - Week 1"
+author: "Johanna Seitz-Holland"
+date: "2025-07-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(1)
+
+# -----------------------------------------------------------------------------#
+#            Load packages necessary                                           #
+# -----------------------------------------------------------------------------#
+library(caret)
+library(cluster)
+library(devtools)
+library(dplyr)
+library(dslabs)
+library(ggplot2)
+library(GGally)
+library(glmnet)
+library(knitr)
+library(ollamar)
+library(pROC)
+library(rafalib)
+library(randomForest)
+library(rmarkdown)
+library(ROCR)
+library(table1)
+library(tableone)
+library(tidymodels)
+library(tidyverse)
+library(tree)
+```
+
+# Project Overview
+The opt data frame in the opt.rData file contains data from a randomized controlled trial that was used to determine whether treatment of maternal periodontal disease can reduce risk of preterm birth and low birth weight. This dataset was taken from the medicaldata R package; documentation can be found here. Your goal is to assess if maternal periodontal disease treatment impacts birthweight and determine whether treatment should be recommended moving forward.
+
+## Week I
+Perform any necessary data pre-processing and cleaning, and document your steps. Depending on the prompt you selected, this may involve transforming variables, creating new variables, and merging data frames. In particular, you may need to make some decisions on how to handle missing data, such as removing rows or columns with a significant amount of missing observations, creating an “unknown” category, or replacing/imputing the missing values. You do not need to develop a rigorous process or cite references, but please briefly justify your choices.
+
+Make and interpret 4-10 visualizations to help you understand the relationships between the variables in your dataset. We highly encourage you to explore the data on your own, but when preparing your response to this question, please be parsimonious in your plots and select visualizations that help you tell a story about the data. If you need to make additional plots to support your responses to the other questions (e.g. to motivate data cleaning or modeling choices), that’s fine.
+
+During the data processing step, you will need to create a low birthweight variable, where low birthweight is defined as <2500 g. This is the outcome variable that you should use in your models. Please note that several numeric variables were coded as factors in this dataset (see documentation or explore this on your own), but you most likely do not want to treat them as factors/categorical.
+
+
+### Data preparation (code not included in html output)
+```{r Loading data, include=FALSE}
+# -----------------------------------------------------------------------------#
+#            Load data                                                         #
+# -----------------------------------------------------------------------------#
+path_data <- '/Users/jx152/Documents/Forschung/Postdoc/Program_Clinical_Effectiveness/Material/Elective2/Projects/Obstetrics/'
+load(paste0(path_data,'opt.rda', sep = ''))
+
+# -----------------------------------------------------------------------------#
+#            Explore data structure                                            #
+# -----------------------------------------------------------------------------#
+
+#class(opt) #Is opt a dataframe? - Yes
+#str(opt) #Look at the different variables 
+#print(kable(opt)) #Prints dataframe nicely
+
+# -----------------------------------------------------------------------------#
+#            Clean and rename variables of interest                            #
+# -----------------------------------------------------------------------------#
+
+# Trim white spaces in character or factor variables
+char_or_factor <- sapply(opt, function(x) is.character(x) || is.factor(x))
+opt[char_or_factor] <- lapply(opt[char_or_factor], function(x) {
+  x <- trimws(as.character(x))  
+  factor(x)                     
+})
+
+################# Exposure variable 
+#Rename C and T to Control and Treatment 
+opt <- opt %>%
+  mutate(Group = recode(Group, "C" = "Control", "T" = "Treatment"))
+
+################# Socio-demographic and clinical risk variables at baseline 
+# Rename Y and N for Hypertension to match the other variables
+opt$Hypertension <- recode(opt$Hypertension, "Y" = "Yes", "N" = "No")
+
+# Recode empty cells for Hisp as missing
+opt$Hisp <- trimws(as.character(opt$Hisp))  
+opt$Hisp[opt$Hisp == ""] <- NA 
+opt$Hisp <- factor(opt$Hisp) 
+
+# Recode empty cells for Use.Alc as missing
+opt$Use.Alc <- trimws(as.character(opt$Use.Alc))  
+opt$Use.Alc[opt$Use.Alc == ""] <- NA              
+opt$Use.Alc <- factor(opt$Use.Alc) 
+
+# Recode empty cells for Use.Tob as missing
+opt$Use.Tob <- trimws(as.character(opt$Use.Tob))  
+opt$Use.Tob[opt$Use.Tob == ""] <- NA              
+opt$Use.Tob <- factor(opt$Use.Tob) 
+
+# Recode empty cells for Drug.Add as missing
+opt$Drug.Add <- trimws(as.character(opt$Drug.Add ))  
+opt$Drug.Add [opt$Drug.Add  == ""] <- NA              
+opt$Drug.Add  <- factor(opt$Drug.Add ) 
+
+################# Other risk factors for preterm/ low weight birth
+# List of variables to clean
+vars_to_clean <- c("Bact.vag", "Oligo", "Polyhyd", "Gonorrhea", "Chlamydia", 
+                   "Strep.B", "Traumatic.Inj", "UTI", "Pre.eclamp")
+
+# Replace empty strings with NA while preserving factor structure
+opt[vars_to_clean] <- lapply(opt[vars_to_clean], function(x) {
+  x <- trimws(as.character(x))      # Remove leading/trailing whitespace
+  x[x == ""] <- NA                  # Replace empty strings with NA
+  factor(x)                         # Convert back to factor
+})
+
+
+
+################# Dental variables in more detail (for now baseline only)
+# Recode values for Tx.comp/
+names(opt)[names(opt) == "Tx.comp."] <- "Tx_comp"
+opt$Tx_comp <- as.character(opt$Tx_comp)
+opt$Tx_comp[opt$Tx_comp == ""] <- "No treatment"
+opt$Tx_comp[opt$Tx_comp == "Yes"] <- "Completed"
+opt$Tx_comp[opt$Tx_comp == "No"] <- "Not completed"
+opt$Tx_comp[opt$Tx_comp == "Und"] <- "Unknown"
+opt$Tx_comp[is.na(opt$Tx_comp)] <- "No treatment"
+opt$Tx_comp <- factor(opt$Tx_comp)
+
+
+#Convert OPG1 to numeric variable
+opt$OPG1 <- as.character(opt$OPG1)         
+opt$OPG1[opt$OPG1 == "."] <- NA            
+opt$OPG1 <- as.numeric(opt$OPG1)           
+
+
+################# Outcome variables
+
+###Preterm birth: Preg.ended...37.wk
+opt$Preg.ended...37.wk[opt$Preg.ended...37.wk == ""] <- NA
+opt$Preg.ended...37.wk <- droplevels(opt$Preg.ended...37.wk)
+
+
+### Birthweight categories 
+opt$bw_category <- with(opt, ifelse(is.na(Birthweight), NA,
+                             ifelse(Birthweight < 2500, "Low", "Normal")))
+opt$bw_category <- factor(opt$bw_category, levels = c("Low", "Normal"))
+
+```
+
+
+### Socio-demographic and clinical risk variables at baseline
+```{r Table 1, include=TRUE, echo =FALSE, warning = FALSE, message=FALSE}
+#Rename variables to look nicer
+label(opt$Clinic) <- "Enrollment Center"
+label(opt$Age) <- "Age at baseline (years)"
+label(opt$Black) <- "Black participant (self-identified)"
+label(opt$White) <- "White participant (self-identified)"
+label(opt$Nat.Am) <- "Native American participant, incl. Latin Americans with aboriginal origin(self-identified)"
+label(opt$Asian) <- "Asian participant (self-identified)"
+label(opt$Hisp) <- "Hispanic participant (self-identified)"
+label(opt$Education) <- "Education level of participant"
+label(opt$Public.Asstce) <- "Public assistance delivery"
+label(opt$BMI) <- "Body mass index"
+label(opt$Hypertension)  <- "Hypertension at baseline"
+label(opt$Diabetes) <- "Diabetes at baseline"
+label(opt$Use.Alc) <- "Alcohol use history"
+label(opt$Use.Tob) <- "Tobacco use history"
+label(opt$Drug.Add) <- "Drug addiction history"
+
+
+#include a caption and footnote
+caption <- "Table 1: Socio-demographic and clinical risk variables at baseline "
+footnote <- "Abbreviations: SD: standard deviation; NY = Harlem Hospital, MN = Hennepin County Center; KY = University of Kentucky; MS = University of Mississippi Medical Center; LT = less than; MT = more than"
+
+my.render.cont <- function(x) {
+    with(stats.apply.rounding(stats.default(x), digits=4), c("",
+        "Mean (SD)"=sprintf("%s (&plusmn; %s)", MEAN, SD)))
+}
+my.render.cat <- function(x) {
+    c("", sapply(stats.default(x), function(y) with(y,
+        sprintf("%d (%0.0f %%)", FREQ, PCT))))
+}
+
+#Code to generate Table
+t1 <- table1(~ Clinic + Age + Black +  White + Nat.Am + Asian + Hisp + Education +  Public.Asstce + BMI + Hypertension + Diabetes + Use.Alc + Use.Tob + Drug.Add  | Group, data=opt, caption=caption, footnote=footnote, render.continuous=my.render.cont, render.categorical=my.render.cat)
+t1
+
+```
+
+### Pregnancy specific variables
+```{r Overview pregnancy specific variables, include=TRUE, echo =FALSE, warning = FALSE, message=FALSE}
+label(opt$Live.PTB) <- "Previous live preterm birth"
+label(opt$Bact.vag) <- "Bacterial vaginosis during pregnancy"
+label(opt$Oligo) <- "Oligohydramnios during pregnancy"
+label(opt$Polyhyd) <- "Polyhydramnios during pregnancy"
+label(opt$Gonorrhea) <- "Gonorrhea during pregnancy"
+label(opt$Chlamydia) <- "Chlamydia during pregnancy"
+label(opt$Strep.B) <- "Strep B colonization during pregnancy"
+label(opt$Traumatic.Inj) <- "Traumatic injury during pregnancy"
+label(opt$UTI) <- "Urinary tract infection during pregnancy"
+label(opt$Pre.eclamp) <- "Pre-eclampsia"
+
+#include a caption and footnote
+caption <- "Table 2: Pregnancy specific risk variables"
+footnote <- "Abbreviations: SD: standard deviation; Strep B: Group B Streptococcus"
+
+my.render.cont <- function(x) {
+    with(stats.apply.rounding(stats.default(x), digits=4), c("",
+        "Mean (SD)"=sprintf("%s (&plusmn; %s)", MEAN, SD)))
+}
+my.render.cat <- function(x) {
+    c("", sapply(stats.default(x), function(y) with(y,
+        sprintf("%d (%0.0f %%)", FREQ, PCT))))
+}
+
+#Code to generate Table
+t2 <- table1(~  Live.PTB +  Bact.vag + Oligo + Polyhyd + Gonorrhea + Chlamydia +  Strep.B + Traumatic.Inj + UTI + Pre.eclamp| Group, data=opt, caption=caption, footnote=footnote, render.continuous=my.render.cont, render.categorical=my.render.cat)
+t2
+
+
+```
+
+
+### Dental specific variables
+```{r Overview dental specific variables, include=TRUE, echo =FALSE, warning = FALSE, message=FALSE}
+
+label(opt$Tx_comp) <- "Treatment plan completed"
+label(opt$BL.GE) <- "Whole-mouth average gingival index at baseline"
+label(opt$BL.Calc.I) <- "Whole-mouth average calculus index at baseline"
+label(opt$BL.Pl.I) <- "Whole-mouth average plaque index at baseline"
+label(opt$OPG1) <- "Serum IgG (immunoglobulin) antibodies to P. gingivalis at baseline"
+label(opt$BL.DNA) <- "Total bacterial concentration at baseline (ng/mL)"
+label(opt$BL.Univ) <- "Count of all bacteria detected by universal primer at baseline"
+label(opt$BL.PG) <- "Count of P. gingivalis bacteria at baseline"
+
+
+#include a caption and footnote
+caption <- "Table 3: Dental specific variables"
+footnote <- "Abbreviations: SD: standard deviation"
+
+my.render.cont <- function(x) {
+    with(stats.apply.rounding(stats.default(x), digits=4), c("",
+        "Mean (SD)"=sprintf("%s (&plusmn; %s)", MEAN, SD)))
+}
+my.render.cat <- function(x) {
+    c("", sapply(stats.default(x), function(y) with(y,
+        sprintf("%d (%0.0f %%)", FREQ, PCT))))
+}
+
+#Code to generate Table
+t3 <- table1(~  Tx_comp + BL.GE + BL.Calc.I + BL.Pl.I + OPG1 + BL.DNA + BL.Univ + BL.PG| Group, data=opt, caption=caption, footnote=footnote, render.continuous=my.render.cont, render.categorical=my.render.cat)
+t3
+
+```
+
+### Outcome variables
+```{r Overview outcome variables, include=TRUE, echo =FALSE, warning = FALSE, message=FALSE}
+label(opt$Preg.ended...37.wk) <- "Preterm birth (<37 weeks)"
+label(opt$Birthweight) <- "Infant birth weight at time of birth"
+label(opt$bw_category) <- "Low birth weight (<2500g)"
+
+#include a caption and footnote
+caption <- "Table 4: Outcome variables"
+footnote <- "Abbreviations: SD: standard deviation"
+
+my.render.cont <- function(x) {
+    with(stats.apply.rounding(stats.default(x), digits=4), c("",
+        "Mean (SD)"=sprintf("%s (&plusmn; %s)", MEAN, SD)))
+}
+my.render.cat <- function(x) {
+    c("", sapply(stats.default(x), function(y) with(y,
+        sprintf("%d (%0.0f %%)", FREQ, PCT))))
+}
+
+#Code to generate Table
+t4 <- table1(~  Preg.ended...37.wk + Birthweight + bw_category| Group, data=opt, caption=caption, footnote=footnote, render.continuous=my.render.cont, render.categorical=my.render.cat)
+t4
+
+
+```

@@ -10,7 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 set.seed(1)
 
 # -----------------------------------------------------------------------------#
-#            Load packages necessary                                           #
+#            Load packages necessary - or else!                                #
 # -----------------------------------------------------------------------------#
 library(caret)
 library(cluster)
